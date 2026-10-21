@@ -1,0 +1,15 @@
+[Unit]
+Description=Vellia Mail APNs relay
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/vellia-relay
+EnvironmentFile=/etc/vellia-relay.env
+ExecStart=/usr/bin/node /opt/vellia-relay/server.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
