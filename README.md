@@ -6,7 +6,7 @@
 
 ## Почему именно так, и без Mac
 
-Собрать приложение можно в облаке Expo (EAS Build) с Linux, Windows или чужого компьютера. Apple подписывает сборку на своих серверах, вы входите в Apple ID в браузере, когда программа об этом попросит. Xcode и Mac не нужны.
+Сборка идёт на бесплатных macOS-раннерах GitHub Actions, в публичном репозитории `verkvest/vellia-mail`. Учётная запись Expo и свой Mac не нужны. Push в `main` запускает тесты и неподписанную сборку симулятора. Сборку для TestFlight запускаете вручную, когда нужны сертификат и профиль.
 
 Движок почты написан на TypeScript и живёт в этом репозитории:
 
@@ -58,71 +58,72 @@ npm run web
 
 ## Поставить на iPhone через TestFlight
 
-Делайте по порядку. Где написано «нажмите сами» — это сайт Apple, Google или вопрос в терминале. Программа сама туда не войдёт.
+Делайте по порядку. Карточку приложения в App Store Connect скрипт не создаёт: это один раз руками в браузере. Сертификат и профиль готовит `scripts/bootstrap_signing.py`. Подписывает и отправляет сборку GitHub Actions, без Expo.
 
-Идентификатор приложения уже задан: `es.verkvest.velliamail`. Если захотите другой, поменяйте его в `app.config.ts` до первой регистрации в Apple, потом его не переименовать.
+Идентификатор уже задан: `es.verkvest.velliamail`. Если захотите другой, поменяйте его в `app.config.ts` и в скрипте до первой регистрации в Apple.
 
-### 1. Apple Developer, идентификатор
-
-1. Откройте [developer.apple.com/account](https://developer.apple.com/account) под тем Apple ID, на котором оплачен Individual.
-2. Certificates, Identifiers & Profiles → Identifiers → кнопка «+».
-3. App IDs → App → Continue.
-4. Description: `Vellia Mail`. Bundle ID: Explicit, `es.verkvest.velliamail`.
-5. В списке возможностей включите Push Notifications. Register.
-
-### 2. Карточка в App Store Connect
+### 1. Карточка приложения (только сайт Apple)
 
 1. Откройте [appstoreconnect.apple.com](https://appstoreconnect.apple.com) → Apps → «+» → New App.
 2. Платформа iOS, имя `Vellia Mail`, основной язык Russian, Bundle ID `es.verkvest.velliamail`, SKU `vellia-mail`.
-3. Create. Поле Apple ID на странице App Information (слева General) — это число `ascAppId`. Оно понадобится при отправке, его можно вписать в `eas.json` в `submit.production.ios.ascAppId`, но первый раз программа спросит сама.
+3. Create.
 
-### 3. Учётная запись Expo и сборка
+Эту запись нельзя создать ключом API из скрипта. Пока её нет, загрузка в TestFlight не к чему привязаться.
 
-На компьютере, где лежит этот каталог:
+### 2. Сертификат и профиль
 
-```bash
-npm install
-npm install --global eas-cli
-eas login
-eas init
-```
+Нужен ключ API из App Store Connect → Users and Access → Integrations → App Store Connect API. Роль Admin. Скачайте `.p8` один раз: Apple его больше не покажет.
 
-`eas login` откроет браузер, войдите в Expo или заведите аккаунт. `eas init` привяжет проект. Если он напечатает Project ID и не запишет его сам, вставьте в терминал перед сборкой:
+На любом компьютере с Python 3 и openssl, из каталога репозитория:
 
 ```bash
-export EAS_PROJECT_ID='скопированный-id'
+export ASC_KEY_ID='ключ из таблицы API'
+export ASC_ISSUER_ID='issuer id над таблицей'
+export ASC_KEY_PATH="$HOME/AuthKey.p8"
+python3 scripts/bootstrap_signing.py
 ```
 
-Сборка для TestFlight:
+Скрипт зарегистрирует bundle id, если его ещё нет, выпустит сертификат iOS Distribution и профиль App Store. Push Notifications он не включает: так профиль подходит к сборке, где push выключен. Если Apple больше не выдаёт сертификат, положите уже существующий p12 и запустите снова:
 
 ```bash
-eas build --platform ios --profile production
+export EXISTING_P12_PATH="$HOME/distribution.p12"
+export EXISTING_P12_PASSWORD='пароль этого p12'
+python3 scripts/bootstrap_signing.py
 ```
 
-На вопросах про сертификат и профиль соглашайтесь, чтобы Expo создал их сам. Когда спросит Apple ID — введите почту разработчика и код двух факторов. Это и есть тот вход, который нельзя сделать за вас. Mac для этого не нужен.
+В каталоге `signing-out/` появятся файлы. `github-secrets.txt` называет, содержимое какого файла вставить в какой секрет GitHub. Сами значения скрипт на экран не печатает. Каталог в git не входит. После копирования секретов его можно удалить.
 
-Сборка идёт на серверах Expo. В конце будет ссылка на `.ipa`.
+Секреты репозитория `verkvest/vellia-mail`:
 
-### 4. Отправить в TestFlight
+| Секрет | Что вставить |
+| --- | --- |
+| `APP_STORE_CONNECT_API_KEY` | текст файла `.p8`, как есть, не base64 |
+| `APP_STORE_CONNECT_API_KEY_ID` | тот же Key ID |
+| `APP_STORE_CONNECT_ISSUER_ID` | Issuer ID |
+| `APPLE_TEAM_ID` | Team ID из Apple Developer |
+| `APPLE_CERTIFICATE_P12` | содержимое `signing-out/distribution.p12.b64` |
+| `APPLE_CERTIFICATE_PASSWORD` | содержимое `signing-out/certificate-password.txt` |
+| `APP_STORE_PROVISIONING_PROFILE` | содержимое `signing-out/profile.mobileprovision.b64` |
+| `GOOGLE_IOS_CLIENT_ID` | необязательно, Client ID Google для iOS |
 
-Когда сборка стала зелёной:
+### 3. Запустить сборку
 
-```bash
-eas submit --platform ios
-```
+На GitHub: Actions → TestFlight → Run workflow. Номер сборки равен номеру запуска. Галочку push не ставьте, если в профиле нет Push Notifications: по умолчанию entitlement `aps` в проект не попадает. Галочка нужна только вместе с `ENABLE_PUSH=1` при повторном запуске скрипта, когда профиль уже с push.
 
-Выберите свежую сборку. Снова может понадобиться Apple ID. Через десять–пятнадцать минут сборка появится в App Store Connect → TestFlight. Если Apple спросит про шифрование: приложение только ходит по TLS, своего шифра в нём нет. В настройках сборки это уже отмечено, вопрос может и не всплыть.
+Сборка подписывается вручную, временной связкой ключей на раннере, и уходит в TestFlight. Обработку на стороне Apple workflow не ждёт: через несколько минут сборка появится в App Store Connect → TestFlight. Шифрование в приложении только TLS, это уже отмечено в настройках сборки.
 
-### 5. Установить на iPhone
+Каждый push в `main` отдельно гоняет `npm test`, проверку типов и неподписанную сборку симулятора. Секреты там не используются.
+
+### 4. Установить на iPhone
 
 1. На iPhone откройте App Store, установите приложение TestFlight от Apple.
 2. Войдите в него тем же Apple ID, что и в Developer.
 3. Vellia Mail будет во внутреннем тестировании. У Individual других внутренних испытателей нет: это вы сами.
 4. Нажмите Install.
 
-Дальше приложение живёт на телефоне. Новая сборка после `eas build` и `eas submit` придёт в TestFlight сама, её нужно принять в приложении TestFlight.
+Новая сборка после повторного запуска workflow придёт в TestFlight, её нужно принять в приложении TestFlight.
 
-Пока идентификатор Google не вшит в сборку, Gmail через кнопку «Войти» не заработает. Пароль приложения Mail.ru заработает сразу. После того как вставите идентификатор Google, нужна ещё одна сборка: схема возврата из Google зашивается в приложение на этапе сборки.
+Пока идентификатор Google не вшит в сборку, Gmail через кнопку «Войти» не заработает. Пароль приложения Mail.ru заработает сразу. После того как вставите `GOOGLE_IOS_CLIENT_ID` в секреты, нужна ещё одна сборка: схема возврата из Google зашивается в приложение на этапе сборки.
 
 ## Подключить Gmail
 
@@ -135,15 +136,7 @@ eas submit --platform ios
 5. Test users → Add users. Впишите все четыре адреса Gmail, которыми будете пользоваться. Пока приложение в статусе Testing, войти может только этот список.
 6. APIs & Services → Credentials → Create credentials → OAuth client ID → iOS. Bundle ID: `es.verkvest.velliamail`. Create и скопируйте Client ID, он кончается на `.apps.googleusercontent.com`.
 
-Перед следующей сборкой:
-
-```bash
-export GOOGLE_IOS_CLIENT_ID='вставьте-client-id.apps.googleusercontent.com'
-eas build --platform ios --profile production
-eas submit --platform ios
-```
-
-Либо впишите то же значение вместо `process.env.GOOGLE_IOS_CLIENT_ID ?? ''` в `app.config.ts`. Идентификатор клиента не пароль, его можно хранить в файле. Секрет клиента Google для этого входа не нужен и в приложение класть его не надо.
+Перед следующей сборкой впишите Client ID в секрет `GOOGLE_IOS_CLIENT_ID` и ещё раз запустите workflow TestFlight. Идентификатор клиента не пароль. Секрет клиента Google для этого входа не нужен и в приложение класть его не надо.
 
 На телефоне: Настройки → Добавить ящик → Gmail → Войти в Gmail. Каждый из четырёх ящиков — отдельный вход, в окне Google каждый раз выбирайте нужный аккаунт. Повторите четыре раза.
 
@@ -177,7 +170,9 @@ eas submit --platform ios
 | `src/platform` | Связка ключей, SQLite, сокет. В браузере вместо них заглушки |
 | `test` | Поддельные IMAP и SMTP и остальные тесты |
 | `relay` | Необязательный сервер уведомлений |
-| `app.config.ts` | Имя, идентификатор Apple, идентификатор Google |
-| `eas.json` | Профили сборки TestFlight |
+| `app.config.ts` | Имя, идентификатор Apple, идентификатор Google. Push включается только при `ENABLE_PUSH=1` |
+| `.github/workflows` | Проверка на push и ручная сборка TestFlight |
+| `scripts/bootstrap_signing.py` | Bundle id, сертификат и профиль через API Apple |
+| `fastlane/` | Подпись выгруженного Xcode-проекта и отправка в TestFlight |
 
 Язык интерфейса переключается в настройках и запоминается на телефоне.

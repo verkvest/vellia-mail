@@ -1,0 +1,81 @@
+name: TestFlight
+
+# Manual only. This does not use Expo or EAS. Signing material comes from
+# GitHub secrets; nothing in this workflow creates a certificate.
+on:
+  workflow_dispatch:
+    inputs:
+      enable_push:
+        description: Add the Push Notifications entitlement. Leave off unless the profile includes aps.
+        type: boolean
+        default: false
+
+jobs:
+  testflight:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      CI: "1"
+      EXPO_NO_TELEMETRY: "1"
+      BUILD_NUMBER: ${{ github.run_number }}
+      ENABLE_PUSH: ${{ inputs.enable_push == true && '1' || '' }}
+      GOOGLE_IOS_CLIENT_ID: ${{ secrets.GOOGLE_IOS_CLIENT_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Select Xcode 26, or the latest stable Xcode on the runner
+        run: |
+          set -euo pipefail
+          if ls -d /Applications/Xcode_26*.app >/dev/null 2>&1; then
+            XCODE=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          else
+            XCODE=/Applications/Xcode.app
+          fi
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+      - run: npm ci
+      - name: Temporary keychain password
+        run: echo "KEYCHAIN_PASSWORD=$(openssl rand -hex 16)" >> "$GITHUB_ENV"
+      - name: Decode the certificate and profile
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APP_STORE_PROVISIONING_PROFILE: ${{ secrets.APP_STORE_PROVISIONING_PROFILE }}
+        run: |
+          set -euo pipefail
+          mkdir -p signing
+          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 -D > signing/distribution.p12
+          printf '%s' "$APP_STORE_PROVISIONING_PROFILE" | base64 -D > signing/profile.mobileprovision
+          APPLE_CERTIFICATE_PASSWORD="$(printf '%s' "$APPLE_CERTIFICATE_PASSWORD" | tr -d '\r\n')"
+          export APPLE_CERTIFICATE_PASSWORD
+          if ! openssl pkcs12 -in signing/distribution.p12 -nokeys -passin env:APPLE_CERTIFICATE_PASSWORD >/dev/null; then
+            echo "The distribution p12 does not open with APPLE_CERTIFICATE_PASSWORD."
+            exit 1
+          fi
+          security cms -D -i signing/profile.mobileprovision > signing/profile.plist
+          if ! grep -q "es.verkvest.velliamail" signing/profile.plist; then
+            echo "The provisioning profile is not for es.verkvest.velliamail."
+            exit 1
+          fi
+          rm -f signing/profile.plist
+      - name: Generate the Xcode project
+        run: npx expo prebuild --platform ios --clean
+      - name: Install fastlane if the runner does not have it
+        run: |
+          set -euo pipefail
+          if ! command -v fastlane >/dev/null 2>&1; then
+            gem install fastlane --no-document
+          fi
+          fastlane --version
+      - name: Sign and upload to TestFlight
+        run: fastlane ios testflight
+      - name: Delete the temporary keychain
+        if: always()
+        run: security delete-keychain vellia-signing.keychain-db || true

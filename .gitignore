@@ -9,6 +9,10 @@ android/
 *.p8
 *.p12
 *.mobileprovision
+signing/
+signing-out/
+build/
+*.ipa
 .env
 .env.*
 relay/data/

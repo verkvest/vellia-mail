@@ -1,0 +1,123 @@
+default_platform(:ios)
+
+KEYCHAIN_NAME = "vellia-signing".freeze
+BUNDLE_ID = "es.verkvest.velliamail".freeze
+
+platform :ios do
+  desc "Archive with the provided distribution certificate and upload to TestFlight"
+  lane :testflight do
+    begin
+    require "plist"
+    require "xcodeproj"
+
+    project_path = Dir["ios/*.xcodeproj"].first
+    UI.user_error!("ios/*.xcodeproj is missing. Run expo prebuild first.") unless project_path
+    workspace_path = project_path.sub(/\.xcodeproj\z/, ".xcworkspace")
+    project = Xcodeproj::Project.open(project_path)
+    app_target = project.targets.find { |target| target.product_type == "com.apple.product-type.application" }
+    UI.user_error!("No application target in #{project_path}") unless app_target
+
+    profile_plist = sh("security cms -D -i signing/profile.mobileprovision", log: false)
+    profile = Plist.parse_xml(profile_plist)
+    UI.user_error!("Could not read the provisioning profile name.") unless profile && profile["Name"]
+    profile_name = profile["Name"]
+    team_ids = profile["TeamIdentifier"] || []
+    team_id = ENV.fetch("APPLE_TEAM_ID")
+    unless team_ids.include?(team_id)
+      UI.user_error!("The profile team does not match APPLE_TEAM_ID.")
+    end
+    UI.message("Provisioning profile #{profile_name}")
+
+    entitlements = Dir["ios/*/*.entitlements"]
+    if entitlements.any? { |path| File.read(path).include?("aps-environment") }
+      profile_entitlements = profile["Entitlements"] || {}
+      unless profile_entitlements.key?("aps-environment")
+        UI.user_error!("Push is enabled in the Xcode project, but this profile has no aps entitlement. Re-run without enable_push, or install a profile that includes Push Notifications.")
+      end
+    end
+
+    keychain_password = ENV.fetch("KEYCHAIN_PASSWORD")
+    create_keychain(
+      name: KEYCHAIN_NAME,
+      password: keychain_password,
+      default_keychain: true,
+      unlock: true,
+      timeout: 3600,
+      lock_when_sleeps: false,
+      add_to_search_list: true
+    )
+    import_certificate(
+      certificate_path: "signing/distribution.p12",
+      certificate_password: ENV.fetch("APPLE_CERTIFICATE_PASSWORD").strip,
+      keychain_name: KEYCHAIN_NAME,
+      keychain_password: keychain_password
+    )
+    install_provisioning_profile(path: "signing/profile.mobileprovision")
+
+    increment_build_number(
+      build_number: ENV.fetch("BUILD_NUMBER"),
+      xcodeproj: project_path
+    )
+    info_plist = Dir["ios/*/Info.plist"].reject { |path| path.include?("/Pods/") }.first
+    if info_plist
+      set_info_plist_value(path: info_plist, key: "CFBundleVersion", value: ENV.fetch("BUILD_NUMBER"))
+    end
+
+    update_code_signing_settings(
+      use_automatic_signing: false,
+      path: project_path,
+      team_id: team_id,
+      code_sign_identity: "Apple Distribution",
+      profile_name: profile_name,
+      targets: [app_target.name],
+      build_configurations: ["Release"]
+    )
+
+    build_args = {
+      scheme: app_target.name,
+      configuration: "Release",
+      export_method: "app-store",
+      output_directory: "build",
+      output_name: "VelliaMail.ipa",
+      export_team_id: team_id,
+      codesigning_identity: "Apple Distribution",
+      skip_profile_detection: true,
+      export_options: {
+        method: "app-store",
+        signingStyle: "manual",
+        teamID: team_id,
+        signingCertificate: "Apple Distribution",
+        provisioningProfiles: {
+          BUNDLE_ID => profile_name
+        }
+      }
+    }
+    if File.directory?(workspace_path)
+      build_args[:workspace] = workspace_path
+    else
+      build_args[:project] = project_path
+    end
+    ipa = build_app(build_args)
+
+    api_key = app_store_connect_api_key(
+      key_id: ENV.fetch("APP_STORE_CONNECT_API_KEY_ID"),
+      issuer_id: ENV.fetch("APP_STORE_CONNECT_ISSUER_ID"),
+      key_content: ENV.fetch("APP_STORE_CONNECT_API_KEY"),
+      is_key_content_base64: false,
+      duration: 1200,
+      in_house: false
+    )
+    upload_to_testflight(
+      api_key: api_key,
+      ipa: ipa,
+      skip_waiting_for_build_processing: true
+    )
+  ensure
+    begin
+      delete_keychain(name: "#{KEYCHAIN_NAME}.keychain-db")
+    rescue StandardError
+      # The workflow deletes the same keychain if this lane exits early.
+    end
+  end
+end
+end

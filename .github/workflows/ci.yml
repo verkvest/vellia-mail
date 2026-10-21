@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  ios-simulator:
+    name: iOS simulator compile
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Select Xcode 26, or the latest stable Xcode on the runner
+        run: |
+          set -euo pipefail
+          if ls -d /Applications/Xcode_26*.app >/dev/null 2>&1; then
+            XCODE=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          else
+            XCODE=/Applications/Xcode.app
+          fi
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+      - run: npm ci
+      - name: Generate the Xcode project
+        run: npx expo prebuild --platform ios --clean
+        env:
+          CI: "1"
+          EXPO_NO_TELEMETRY: "1"
+      - name: Unsigned iOS Simulator build
+        run: |
+          set -euo pipefail
+          WORKSPACE=$(find ios -maxdepth 1 -name '*.xcworkspace' | head -1)
+          if [ -z "$WORKSPACE" ]; then
+            echo "expo prebuild did not create an xcworkspace"
+            exit 1
+          fi
+          SCHEME=$(
+            xcodebuild -workspace "$WORKSPACE" -list |
+              awk '/Schemes:/{flag=1; next} flag && NF {print; exit}' |
+              sed 's/^[[:space:]]*//'
+          )
+          echo "Building $SCHEME from $WORKSPACE"
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
