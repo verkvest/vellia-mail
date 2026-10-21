@@ -76,6 +76,23 @@ platform :ios do
       build_configurations: ["Release"]
     )
 
+    # Expo templates carry CODE_SIGN_IDENTITY[sdk=iphoneos*] = "iPhone Distribution",
+    # which Xcode resolves to the legacy "iOS Distribution" name. Force the identity we import.
+    signing_project = Xcodeproj::Project.open(project_path)
+    signing_targets = [signing_project] + signing_project.targets.select { |t| t.name == app_target.name }
+    signing_targets.each do |owner|
+      owner.build_configurations.each do |config|
+        settings = config.build_settings
+        settings.keys.select { |key| key.start_with?("CODE_SIGN_IDENTITY") }.each { |key| settings.delete(key) }
+        next unless owner.is_a?(Xcodeproj::Project::Object::PBXNativeTarget)
+        settings["CODE_SIGN_IDENTITY"] = "Apple Distribution"
+        settings["CODE_SIGN_STYLE"] = "Manual"
+        settings["DEVELOPMENT_TEAM"] = team_id
+        settings["PROVISIONING_PROFILE_SPECIFIER"] = profile_name if config.name == "Release"
+      end
+    end
+    signing_project.save
+
     build_args = {
       scheme: app_target.name,
       configuration: "Release",
