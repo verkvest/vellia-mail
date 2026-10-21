@@ -1,0 +1,15 @@
+[Unit]
+Description=Vellia Mail IMAP watcher
+After=network-online.target vellia-relay.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/vellia-relay
+EnvironmentFile=/etc/vellia-watch.env
+ExecStart=/usr/bin/node /opt/vellia-relay/watch.mjs
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
