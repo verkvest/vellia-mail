@@ -388,6 +388,13 @@ def reexport_p12(source: Path, source_password: str, password: str, destination:
                 str(destination),
                 "-passout",
                 "env:P12_PASSWORD",
+                # macOS `security import` cannot read the OpenSSL 3 default (AES/PBKDF2) p12.
+                "-keypbe",
+                "PBE-SHA1-3DES",
+                "-certpbe",
+                "PBE-SHA1-3DES",
+                "-macalg",
+                "sha1",
             ],
             env_extra={"P12_PASSWORD": password},
         )
