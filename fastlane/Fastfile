@@ -10,14 +10,17 @@ platform :ios do
     require "plist"
     require "xcodeproj"
 
-    project_path = Dir["ios/*.xcodeproj"].first
+    # Fastfile code runs inside fastlane/, actions run from the repo root. Use absolute paths.
+    root = File.directory?("ios") ? Dir.pwd : File.expand_path("..", Dir.pwd)
+    signing_dir = File.join(root, "signing")
+    project_path = Dir[File.join(root, "ios/*.xcodeproj")].first
     UI.user_error!("ios/*.xcodeproj is missing. Run expo prebuild first.") unless project_path
     workspace_path = project_path.sub(/\.xcodeproj\z/, ".xcworkspace")
     project = Xcodeproj::Project.open(project_path)
     app_target = project.targets.find { |target| target.product_type == "com.apple.product-type.application" }
     UI.user_error!("No application target in #{project_path}") unless app_target
 
-    profile_plist = sh("security cms -D -i signing/profile.mobileprovision", log: false)
+    profile_plist = sh("security cms -D -i \"#{signing_dir}/profile.mobileprovision\"", log: false)
     profile = Plist.parse_xml(profile_plist)
     UI.user_error!("Could not read the provisioning profile name.") unless profile && profile["Name"]
     profile_name = profile["Name"]
@@ -28,7 +31,7 @@ platform :ios do
     end
     UI.message("Provisioning profile #{profile_name}")
 
-    entitlements = Dir["ios/*/*.entitlements"]
+    entitlements = Dir[File.join(root, "ios/*/*.entitlements")]
     if entitlements.any? { |path| File.read(path).include?("aps-environment") }
       profile_entitlements = profile["Entitlements"] || {}
       unless profile_entitlements.key?("aps-environment")
@@ -47,18 +50,18 @@ platform :ios do
       add_to_search_list: true
     )
     import_certificate(
-      certificate_path: "signing/distribution.p12",
+      certificate_path: File.join(signing_dir, "distribution.p12"),
       certificate_password: ENV.fetch("APPLE_CERTIFICATE_PASSWORD").strip,
       keychain_name: KEYCHAIN_NAME,
       keychain_password: keychain_password
     )
-    install_provisioning_profile(path: "signing/profile.mobileprovision")
+    install_provisioning_profile(path: File.join(signing_dir, "profile.mobileprovision"))
 
     increment_build_number(
       build_number: ENV.fetch("BUILD_NUMBER"),
       xcodeproj: project_path
     )
-    info_plist = Dir["ios/*/Info.plist"].reject { |path| path.include?("/Pods/") }.first
+    info_plist = Dir[File.join(root, "ios/*/Info.plist")].reject { |path| path.include?("/Pods/") }.first
     if info_plist
       set_info_plist_value(path: info_plist, key: "CFBundleVersion", value: ENV.fetch("BUILD_NUMBER"))
     end
@@ -77,7 +80,7 @@ platform :ios do
       scheme: app_target.name,
       configuration: "Release",
       export_method: "app-store",
-      output_directory: "build",
+      output_directory: File.join(root, "build"),
       output_name: "VelliaMail.ipa",
       export_team_id: team_id,
       codesigning_identity: "Apple Distribution",
